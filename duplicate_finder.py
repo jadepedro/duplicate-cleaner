@@ -3,15 +3,17 @@ from tkinter import ttk, filedialog, messagebox
 import os
 import hashlib
 from datetime import datetime
-import shutil
 import send2trash
 from typing import List, Dict
+import fnmatch
+from tkcalendar import DateEntry
 
 class DuplicateFinderApp:
+
     def __init__(self, root):
         self.root = root
         self.root.title("Duplicate File Finder")
-        self.root.geometry("800x600")
+        self.root.geometry("800x800")  # Increased height to accommodate filters
 
         # Variables
         self.master_path = tk.StringVar()
@@ -22,6 +24,12 @@ class DuplicateFinderApp:
         self.match_size = tk.BooleanVar(value=True)
         self.match_date = tk.BooleanVar(value=False)
         self.move_to_trash = tk.BooleanVar(value=True)
+        self._last_sort = None
+        
+        # Filter activation variables
+        self.use_filename_filter = tk.BooleanVar(value=False)
+        self.use_directory_filter = tk.BooleanVar(value=False)
+        self.use_date_filter = tk.BooleanVar(value=False)
         
         self.create_widgets()
         self.files_data = []
@@ -57,7 +65,7 @@ class DuplicateFinderApp:
         path_frame.grid_columnconfigure(1, weight=1)
 
         # Options
-        options_frame = ttk.LabelFrame(self.root, text="Options", padding=5)
+        options_frame = ttk.LabelFrame(self.root, text="Match Options", padding=5)
         options_frame.pack(fill='x', padx=5, pady=5)
 
         ttk.Checkbutton(options_frame, text="Include Subdirectories", 
@@ -69,22 +77,87 @@ class DuplicateFinderApp:
         ttk.Checkbutton(options_frame, text="Match Date", 
                        variable=self.match_date).pack(side='left', padx=5)
 
+        # Filter frame
+        filter_frame = ttk.LabelFrame(self.root, text="Selection Filters", padding=5)
+        filter_frame.pack(fill='x', padx=5, pady=5)
+
+        # Filename filter
+        ttk.Checkbutton(filter_frame, text="Use filename filter:", 
+                       variable=self.use_filename_filter).grid(row=0, column=0, sticky='w')
+        self.filename_pattern = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self.filename_pattern).grid(row=0, column=1, sticky='ew')
+        ttk.Label(filter_frame, text="(e.g., *.txt, doc*.*)").grid(row=0, column=2, sticky='w')
+
+        # Directory filter
+        ttk.Checkbutton(filter_frame, text="Use directory filter:", 
+                       variable=self.use_directory_filter).grid(row=1, column=0, sticky='w')
+        self.filter_directory = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self.filter_directory).grid(row=1, column=1, sticky='ew')
+        ttk.Button(filter_frame, text="Browse", command=self.browse_filter_dir).grid(row=1, column=2)
+
+        # Date range filter
+        ttk.Checkbutton(filter_frame, text="Use date filter:", 
+                       variable=self.use_date_filter).grid(row=2, column=0, sticky='w')
+        date_frame = ttk.Frame(filter_frame)
+        date_frame.grid(row=2, column=1, columnspan=2, sticky='w')
+        
+        self.date_from = ttk.Entry(date_frame, width=12)
+        self.date_from.grid(row=0, column=0, padx=5)
+        ttk.Label(date_frame, text="to").grid(row=0, column=1, padx=5)
+        self.date_to = ttk.Entry(date_frame, width=12)
+        self.date_to.grid(row=0, column=2, padx=5)
+        ttk.Label(date_frame, text="(YYYY-MM-DD)").grid(row=0, column=3, padx=5)
+
+        # Filter buttons
+        filter_buttons_frame = ttk.Frame(filter_frame)
+        filter_buttons_frame.grid(row=3, column=0, columnspan=3, pady=5)
+        ttk.Button(filter_buttons_frame, text="Apply Filters", 
+                  command=self.apply_selection_filters).pack(side='left', padx=5)
+        ttk.Button(filter_buttons_frame, text="Reset Selection", 
+                  command=self.reset_selection).pack(side='left', padx=5)
+
+        filter_frame.grid_columnconfigure(1, weight=1)
+
+        # Create frame for treeview and scrollbar
+        tree_frame = ttk.Frame(self.root)
+        tree_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
         # Results treeview
-        self.tree = ttk.Treeview(self.root, columns=('select', 'name', 'path', 'size', 'date'), 
+        self.tree = ttk.Treeview(tree_frame, columns=('select', 'name', 'path', 'size', 'date'), 
                                 show='headings')
-        self.tree.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Add scrollbars
+        yscroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient='horizontal', command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
 
+        # Grid layout for treeview and scrollbars
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        yscroll.grid(row=0, column=1, sticky='ns')
+        xscroll.grid(row=1, column=0, sticky='ew')
+
+        # Configure grid weights
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+
+        # Configure columns and headings
         self.tree.heading('select', text='Select')
-        self.tree.heading('name', text='Name')
-        self.tree.heading('path', text='Path')
-        self.tree.heading('size', text='Size')
-        self.tree.heading('date', text='Date Modified')
+        for col in ('name', 'path', 'size', 'date'):
+            self.tree.heading(col, text=col.title(),
+                            command=lambda c=col: self.sort_treeview(c))
 
-        self.tree.column('select', width=50)
+        self.tree.column('select', width=50, anchor='center')
         self.tree.column('name', width=200)
         self.tree.column('path', width=300)
         self.tree.column('size', width=100)
         self.tree.column('date', width=150)
+
+        # Create checkboxes in the treeview
+        self.tree.tag_configure('checked', image=self.create_checkbox(True))
+        self.tree.tag_configure('unchecked', image=self.create_checkbox(False))
+
+        # Bind checkbox click
+        self.tree.bind('<Button-1>', self.toggle_checkbox)
 
         # Buttons
         button_frame = ttk.Frame(self.root)
@@ -97,8 +170,64 @@ class DuplicateFinderApp:
         ttk.Button(button_frame, text="Delete Selected", 
                   command=self.delete_selected).pack(side='left', padx=5)
 
-        self.update_mode()
+        self.update_mode() 
 
+    def create_checkbox(self, checked):
+        """Create a checkbox image"""
+        size = 20
+        checkbox = tk.Canvas(self.root, width=size, height=size, highlightthickness=0)
+        checkbox.create_rectangle(2, 2, size-2, size-2, outline='black')
+        if checked:
+            checkbox.create_line(4, size//2, size//2, size-4, width=2)
+            checkbox.create_line(size//2, size-4, size-4, 4, width=2)
+        return checkbox
+
+    def apply_selection_filters(self):
+        """Apply filters to select files"""
+        for item in self.tree.get_children():
+            values = self.tree.item(item)['values']
+            file_info = {
+                'name': values[1],
+                'path': values[2],
+                'size': int(values[3].split()[0].replace(',', '')),
+                'date': datetime.strptime(values[4], '%Y-%m-%d %H:%M:%S')
+            }
+            
+            should_select = True
+            
+            # Apply filename filter
+            if self.use_filename_filter.get() and self.filename_pattern.get():
+                if not fnmatch.fnmatch(file_info['name'], self.filename_pattern.get()):
+                    should_select = False
+
+            # Apply directory filter
+            if self.use_directory_filter.get() and self.filter_directory.get():
+                if not file_info['path'].startswith(self.filter_directory.get()):
+                    should_select = False
+
+            # Apply date filter
+            if self.use_date_filter.get():
+                from_date = self.date_from.get().strip()
+                to_date = self.date_to.get().strip()
+                if from_date and to_date:
+                    try:
+                        from_date = datetime.strptime(from_date, '%Y-%m-%d').date()
+                        to_date = datetime.strptime(to_date, '%Y-%m-%d').date()
+                        file_date = file_info['date'].date()
+                        if not (from_date <= file_date <= to_date):
+                            should_select = False
+                    except ValueError:
+                        pass
+
+            # Update selection
+            self.tree.set(item, 'select', should_select)
+            self.tree.item(item, tags=('checked' if should_select else 'unchecked',))
+
+    def reset_selection(self):
+        """Reset all selections to unchecked"""
+        for item in self.tree.get_children():
+            self.tree.set(item, 'select', False)
+            self.tree.item(item, tags=('unchecked',))
     def update_mode(self):
         if self.mode.get() == "single":
             self.removable_entry.config(state='disabled')
@@ -116,6 +245,45 @@ class DuplicateFinderApp:
         path = filedialog.askdirectory()
         if path:
             self.removable_path.set(path)
+
+    def browse_filter_dir(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.filter_directory.set(path)
+
+    def toggle_checkbox(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "cell":
+            column = self.tree.identify_column(event.x)
+            if column == '#1':  # Select column
+                item = self.tree.identify_row(event.y)
+                if item:
+                    current_val = self.tree.set(item, 'select')
+                    new_val = not bool(current_val)
+                    self.tree.set(item, 'select', new_val)
+                    self.tree.item(item, tags=('checked' if new_val else 'unchecked',))
+                    return "break"  # Prevent default handling
+
+    def sort_treeview(self, col):
+        """Sort treeview content when header is clicked."""
+        items = [(self.tree.set(item, col), item) for item in self.tree.get_children('')]
+        
+        # Determine sort order
+        reverse = False
+        if hasattr(self, '_last_sort') and self._last_sort == (col, False):
+            reverse = True
+        self._last_sort = (col, reverse)
+        
+        # Convert values for proper sorting
+        if col == 'size':
+            items = [(int(val.split()[0].replace(',', '')), item) for val, item in items]
+        elif col == 'date':
+            items = [(datetime.strptime(val, '%Y-%m-%d %H:%M:%S'), item) for val, item in items]
+        
+        # Sort items
+        items.sort(reverse=reverse)
+        for index, (_, item) in enumerate(items):
+            self.tree.move(item, '', index)
 
     def get_file_hash(self, filepath: str) -> str:
         """Calculate MD5 hash of file."""
@@ -146,6 +314,26 @@ class DuplicateFinderApp:
             return False
         if self.match_date.get() and abs((file1['date'] - file2['date']).total_seconds()) > 1:
             return False
+        return True
+
+    def apply_filters(self, file_info: Dict) -> bool:
+        """Apply all filters to a file."""
+        # Filename pattern filter
+        if self.filename_pattern.get():
+            if not fnmatch.fnmatch(file_info['name'], self.filename_pattern.get()):
+                return False
+
+        # Directory filter
+        if self.filter_directory.get():
+            if not file_info['path'].startswith(self.filter_directory.get()):
+                return False
+
+        # Date range filter
+        if self.date_from.get_date() and self.date_to.get_date():
+            file_date = file_info['date'].date()
+            if not (self.date_from.get_date() <= file_date <= self.date_to.get_date()):
+                return False
+
         return True
 
     def get_files(self, directory: str) -> List[Dict]:
@@ -200,15 +388,17 @@ class DuplicateFinderApp:
                           for master_file in master_files)
                 ]
 
-            # Display results
+            # Apply filters and display results
             for file_info in duplicates:
-                self.tree.insert('', 'end', values=(
-                    False,
-                    file_info['name'],
-                    file_info['path'],
-                    f"{file_info['size']:,} bytes",
-                    file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
-                ))
+                if self.apply_filters(file_info):
+                    item = self.tree.insert('', 'end', values=(
+                        False,
+                        file_info['name'],
+                        file_info['path'],
+                        f"{file_info['size']:,} bytes",
+                        file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
+                    ))
+                    self.tree.item(item, tags=('unchecked',))
 
         finally:
             self.root.config(cursor="")
