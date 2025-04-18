@@ -6,12 +6,13 @@ def create_mode_frame(app):
     frame = ttk.LabelFrame(app.root, text="Mode", padding=5)
     frame.pack(fill='x', padx=5, pady=5)
     
-    ttk.Radiobutton(frame, text="Single Directory", 
-                   variable=app.mode, value="single",
-                   command=app.file_handler.update_mode).pack(side='left', padx=5)
     ttk.Radiobutton(frame, text="Master and Removable", 
                    variable=app.mode, value="master",
                    command=app.file_handler.update_mode).pack(side='left', padx=5)
+    ttk.Radiobutton(frame, text="Single Directory", 
+                   variable=app.mode, value="single",
+                   command=app.file_handler.update_mode).pack(side='left', padx=5)
+
     return frame
 
 def create_path_frame(app):

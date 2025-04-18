@@ -22,7 +22,7 @@ class DuplicateFinderApp:
     def setup_variables(self):
         self.master_path = tk.StringVar()
         self.removable_path = tk.StringVar()
-        self.mode = tk.StringVar(value="single")
+        self.mode = tk.StringVar(value="master")
         self.include_subdirs = tk.BooleanVar(value=True)
         self.match_name = tk.BooleanVar(value=True)
         self.match_size = tk.BooleanVar(value=True)

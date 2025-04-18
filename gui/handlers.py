@@ -4,8 +4,11 @@ from datetime import datetime
 import send2trash
 import fnmatch
 from typing import List, Dict
-from .utils import get_file_hash
 from pathlib import Path
+import threading
+from .utils import get_file_hash
+from .progress_dialog import ProgressDialog
+
 
 class FileHandler:
     def __init__(self, app):
@@ -60,21 +63,30 @@ class FileHandler:
         """Get all files in directory"""
         files = []
         try:
+            print(f"Accessing directory: {directory}")
             # Convert to Path object
             dir_path = Path(directory).resolve()
             
             if self.app.include_subdirs.get():
+                print("Including subdirectories")
                 # Use rglob for recursive search
                 file_paths = dir_path.rglob('*')
             else:
+                print("Single directory mode")
                 # Use glob for single directory
                 file_paths = dir_path.glob('*')
-
+    
+            # Convert generator to list for length calculation
+            file_paths = list(file_paths)
+            print(f"Found {len(file_paths)} files")
+            
             # Filter for files only (exclude directories)
             file_paths = [f for f in file_paths if f.is_file()]
             
             for filepath in file_paths:
+                print(f"Processing file: {filepath}")
                 try:
+                    print(f"Appending file info for {filepath}")
                     files.append(self.get_file_info(str(filepath)))
                 except (OSError, PermissionError) as e:
                     # Log the error but continue processing
@@ -85,6 +97,7 @@ class FileHandler:
             messagebox.showerror("Error", f"Error accessing directory {directory}: {str(e)}")
             
         return files
+    
 
     def is_duplicate(self, file1: Dict, file2: Dict) -> bool:
         """Check if files are duplicates based on selected criteria"""
@@ -101,53 +114,126 @@ class FileHandler:
         if not self.app.master_path.get():
             messagebox.showerror("Error", "Please select master directory")
             return
-
+    
         if self.app.mode.get() == "master" and not self.app.removable_path.get():
             messagebox.showerror("Error", "Please select removable directory")
             return
-
+    
         # Clear previous results
         for item in self.app.tree.get_children():
             self.app.tree.delete(item)
-
-        try:
-            self.app.root.config(cursor="wait")
-            self.app.root.update()
-
-            master_files = self.get_files(self.app.master_path.get())
-            
-            if self.app.mode.get() == "single":
-                # Find duplicates within single directory
+    
+        # Create and show progress dialog
+        progress = ProgressDialog(self.app.root, "Searching for duplicates")
+        
+        def search_thread():
+            print("Starting search thread")
+            try:
                 duplicates = []
-                for i, file1 in enumerate(master_files):
-                    for file2 in master_files[i+1:]:
-                        if self.is_duplicate(file1, file2):
-                            if file1 not in duplicates:
-                                duplicates.append(file1)
-                            if file2 not in duplicates:
-                                duplicates.append(file2)
-            else:
-                # Find duplicates between master and removable
-                removable_files = self.get_files(self.app.removable_path.get())
-                duplicates = [
-                    removable_file for removable_file in removable_files
-                    if any(self.is_duplicate(master_file, removable_file) 
-                          for master_file in master_files)
-                ]
-
-            # Display results
-            for file_info in duplicates:
-                item = self.app.tree.insert('', 'end', values=(
-                    False,
-                    file_info['name'],
-                    file_info['path'],
-                    f"{file_info['size']:,} bytes",
-                    file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
-                ))
-                self.app.tree.item(item, tags=('unchecked',))
-
-        finally:
-            self.app.root.config(cursor="")
+                matches_count = 0
+    
+                def process_files(files1, files2=None):
+                    print("Processing files")
+                    nonlocal matches_count
+                    if files2 is None:
+                        print("No second file list provided")
+                        files2 = files1
+                        start_idx = 1
+                    else:
+                        print("Second file list provided")
+                        start_idx = 0
+    
+                    print(f"Files1 length: {len(files1)}")
+                    for i, file1 in enumerate(files1):
+                        print(f"Processing file {i + 1} of {len(files1)}")
+                        if progress.cancelled:
+                            return None
+                            
+                        current_files = files2[i + start_idx:] if files2 is files1 else files2
+                        
+                        # Update progress dialog
+                        progress.update(
+                            os.path.dirname(file1['path']),
+                            os.path.basename(file1['path']),
+                            matches_count
+                        )
+    
+                        for file2 in current_files:
+                            print(f"Comparing {file1['name']} with {file2['name']}")
+                            if progress.cancelled:
+                                return None
+                                
+                            if self.is_duplicate(file1, file2):
+                                print(f"Found duplicate: {file1['name']} and {file2['name']}")
+                                matches_count += 1
+                                if self.app.mode.get() == "single":
+                                    if file1 not in duplicates:
+                                        duplicates.append(file1)
+                                    if file2 not in duplicates:
+                                        duplicates.append(file2)
+                                else:
+                                    if file2 not in duplicates:
+                                        duplicates.append(file2)
+                    
+                    return duplicates
+    
+                print("Getting master files. This may take a while...")
+                master_files = self.get_files(self.app.master_path.get())
+                
+                if self.app.mode.get() == "single":
+                    print("Single directory mode")
+                    # Find duplicates within single directory
+                    result = process_files(master_files)
+                else:
+                    print("Master and removable mode")  
+                    # Find duplicates between master and removable
+                    print("Getting removable files. This may take a while...")
+                    removable_files = self.get_files(self.app.removable_path.get())
+                    result = process_files(master_files, removable_files)
+    
+                def update_ui():
+                    # Close progress dialog
+                    progress.queue.put(None)  # Signal to close
+                    
+                    if progress.cancelled:
+                        messagebox.showinfo("Cancelled", "Search was cancelled by user")
+                        return
+    
+                    # Display results
+                    if result:
+                        for file_info in result:
+                            item = self.app.tree.insert('', 'end', values=(
+                                False,
+                                file_info['name'],
+                                file_info['path'],
+                                f"{file_info['size']:,} bytes",
+                                file_info['date'].strftime('%Y-%m-%d %H:%M:%S')
+                            ))
+                            self.app.tree.item(item, tags=('unchecked',))
+                        
+                        messagebox.showinfo("Complete", f"Found {len(result)} duplicate files")
+                    else:
+                        messagebox.showinfo("Complete", "No duplicate files found")
+    
+                # Schedule UI update on main thread
+                self.app.root.after(0, update_ui)
+    
+            except Exception as error:
+                # Create a closure that captures the error
+                def show_error(e):
+                    def _show():
+                        progress.queue.put(None)  # Signal to close
+                        messagebox.showerror("Error", f"An error occurred: {str(e)}")
+                    return _show
+                
+                # Schedule error display on main thread
+                self.app.root.after(0, show_error(error))
+    
+        # Start search in separate thread
+        thread = threading.Thread(target=search_thread, daemon=True)
+        thread.start()
+    
+    
 
     def apply_selection_filters(self):
         """Apply filters to select files"""

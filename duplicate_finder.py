@@ -38,13 +38,15 @@ class DuplicateFinderApp:
         # Mode selection
         mode_frame = ttk.LabelFrame(self.root, text="Mode", padding=5)
         mode_frame.pack(fill='x', padx=5, pady=5)
+    
+        ttk.Radiobutton(mode_frame, text="Master and Removable", 
+                       variable=self.mode, value="master",
+                       command=self.update_mode).pack(side='left', padx=5)
         
         ttk.Radiobutton(mode_frame, text="Single Directory", 
                        variable=self.mode, value="single",
                        command=self.update_mode).pack(side='left', padx=5)
-        ttk.Radiobutton(mode_frame, text="Master and Removable", 
-                       variable=self.mode, value="master",
-                       command=self.update_mode).pack(side='left', padx=5)
+  
 
         # Path selection
         path_frame = ttk.LabelFrame(self.root, text="Directories", padding=5)
