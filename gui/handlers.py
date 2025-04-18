@@ -5,6 +5,7 @@ import send2trash
 import fnmatch
 from typing import List, Dict
 from .utils import get_file_hash
+from pathlib import Path
 
 class FileHandler:
     def __init__(self, app):
@@ -41,27 +42,48 @@ class FileHandler:
 
     def get_file_info(self, filepath: str) -> Dict:
         """Get file information including hash"""
-        stat = os.stat(filepath)
-        return {
-            'name': os.path.basename(filepath),
-            'path': filepath,
-            'size': stat.st_size,
-            'date': datetime.fromtimestamp(stat.st_mtime),
-            'hash': get_file_hash(filepath)
-        }
+        try:
+            # Convert to Path object and resolve to absolute path
+            path = Path(filepath).resolve()
+            stat = path.stat()
+            return {
+                'name': path.name,
+                'path': str(path),
+                'size': stat.st_size,
+                'date': datetime.fromtimestamp(stat.st_mtime),
+                'hash': get_file_hash(str(path))
+            }
+        except Exception as e:
+            raise OSError(f"Error accessing file {filepath}: {str(e)}")
 
     def get_files(self, directory: str) -> List[Dict]:
-        """Get all files in directory and subdirectories if enabled"""
+        """Get all files in directory"""
         files = []
-        walk_fn = os.walk if self.app.include_subdirs.get() else lambda x: [(x, [], os.listdir(x))]
-        
-        for root, _, filenames in walk_fn(directory):
-            for filename in filenames:
-                filepath = os.path.join(root, filename)
+        try:
+            # Convert to Path object
+            dir_path = Path(directory).resolve()
+            
+            if self.app.include_subdirs.get():
+                # Use rglob for recursive search
+                file_paths = dir_path.rglob('*')
+            else:
+                # Use glob for single directory
+                file_paths = dir_path.glob('*')
+
+            # Filter for files only (exclude directories)
+            file_paths = [f for f in file_paths if f.is_file()]
+            
+            for filepath in file_paths:
                 try:
-                    files.append(self.get_file_info(filepath))
-                except (OSError, PermissionError):
+                    files.append(self.get_file_info(str(filepath)))
+                except (OSError, PermissionError) as e:
+                    # Log the error but continue processing
+                    print(f"Error processing {filepath}: {str(e)}")
                     continue
+                    
+        except Exception as e:
+            messagebox.showerror("Error", f"Error accessing directory {directory}: {str(e)}")
+            
         return files
 
     def is_duplicate(self, file1: Dict, file2: Dict) -> bool:
@@ -234,19 +256,28 @@ class FileHandler:
         
         for filepath in selected:
             try:
+                # Convert to Path object and resolve to absolute path
+                path = Path(filepath).resolve()
+                
                 if self.app.move_to_trash.get():
-                    send2trash.send2trash(filepath)
-                    action = "Moved to trash"
+                    try:
+                        send2trash.send2trash(str(path))
+                        action = "Moved to trash"
+                    except Exception as trash_error:
+                        # If send2trash fails, try direct deletion
+                        os.remove(str(path))
+                        action = "Deleted (fallback)"
                 else:
-                    os.remove(filepath)
+                    os.remove(str(path))
                     action = "Deleted"
                 
                 with open(log_file, 'a', encoding='utf-8') as f:
-                    f.write(f"{datetime.now()}: {action} - {filepath}\n")
+                    f.write(f"{datetime.now()}: {action} - {path}\n")
                     
             except Exception as e:
                 with open(log_file, 'a', encoding='utf-8') as f:
                     f.write(f"{datetime.now()}: Error processing {filepath} - {str(e)}\n")
+                messagebox.showerror("Error", f"Could not process file:\n{filepath}\n\nError: {str(e)}")
 
         # Refresh the display
         self.search()
